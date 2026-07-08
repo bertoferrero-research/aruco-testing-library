@@ -1,12 +1,47 @@
 #!/usr/bin/env python3
 """
-RSSI Sample Cleaner Script
+RSSI Dataset Checker Script
 
-This script reads all the csv files in the processing folder.
-It reads all nonspace files, for each one checks if there is secondary files with a number on its name 
-(e.g. 1.5_28.5_1.5__all.csv -> 1.5_28.5_1.5__all (1).csv)
-If there are secondary files, it merges them into the main file and deletes the secondary files.
-It saves the merged file in the same folder.
+This script validates the integrity of a fingerprint dataset. It does not modify
+any file; it only reads them and reports problems.
+
+Using the grid defined in the room settings ('offline_grid') and the allowed MAC
+list, it walks every grid position (X/Y over the configured Z) and runs three
+checks:
+
+Phase 1: Existence of expected files.
+    For every position and every MAC (plus the aggregated 'all' file), it checks
+    that the corresponding fingerprint CSV exists. If any file is missing, it
+    lists them and stops (the remaining phases would not be reliable).
+
+Phase 2: Number of files per position.
+    For every position it counts the CSV files actually present on disk
+    (matching '{x}_{y}_{z}__*.csv', excluding the 'all' file) and checks that
+    the count matches the number of MACs in the MAC filter list. This detects
+    unexpected extra files (e.g. MACs not in the filter) or missing ones.
+
+Phase 3: Row consistency against 'all'.
+    For every position it checks that the number of rows in the aggregated 'all'
+    file equals the sum of the rows of the individual per-MAC files.
+
+Any missing file, file-count mismatch or row-count mismatch is printed as a
+warning. If nothing is printed, the dataset is consistent.
+
+Expected fingerprint filename pattern (see common_tools.compose_fingerprint_filename):
+    {x}_{y}_{z}__{mac}.csv   (MAC upper-cased with ':'/'-' replaced by '_')
+    {x}_{y}_{z}__all.csv     (aggregated file)
+
+Example calls:
+    python rssi_dataset_checker.py \
+        --working_dir "./location 4 - ua/fingerprint" \
+        --mac_filter_file "./location 4 - ua/mac_filter.json" \
+        --room_settings_file "./location 4 - ua/room_settings.json"
+
+    # Windows PowerShell (paths with spaces quoted):
+    python rssi_dataset_checker.py `
+        --working_dir ".\location 4 - ua\fingerprint" `
+        --mac_filter_file ".\location 4 - ua\mac_filter.json" `
+        --room_settings_file ".\location 4 - ua\room_settings.json"
 """
 
 import os
@@ -66,8 +101,32 @@ def process_folder(folder_path:str, mac_filter_file:str, room_settings_file:str)
         for filepath in not_existing_files:
             print(f" - {filepath}")
         return
-    
-    print("Phase 2: Checking the fingerprints sum rows in 'all'...")
+
+    print("Phase 2: Checking the number of files per position matches the MAC list...")
+    # Expected per-MAC files (the 'all' file was appended to mac_list, so exclude it)
+    expected_mac_files = len(mac_list) - 1
+    file_count_errors = []
+    x = x_min
+    while x <= x_max:
+        y = y_min
+        while y <= y_max:
+            # Count the actual per-MAC files present for this position (excluding 'all')
+            position_prefix = f"{x}_{y}_{z}__"
+            all_filepath = common_tools.compose_fingerprint_filepath(folder_path, x, y, z, "all")
+            found_files = glob.glob(os.path.join(folder_path, f"{position_prefix}*.csv"))
+            found_mac_files = [f for f in found_files if f != all_filepath]
+            if len(found_mac_files) != expected_mac_files:
+                file_count_errors.append((x, y, z, len(found_mac_files), expected_mac_files))
+            y += resolution
+        x += resolution
+
+    if file_count_errors:
+        print("Warning!!!: The following positions have an unexpected number of files:")
+        for error in file_count_errors:
+            print(f" - Position (X: {error[0]}, Y: {error[1]}, Z: {error[2]}): "
+                  f"Found = {error[3]}, Expected = {error[4]}")
+
+    print("Phase 3: Checking the fingerprints sum rows in 'all'...")
     position_errors = []
     x = x_min
     while x <= x_max:
@@ -99,10 +158,10 @@ def process_folder(folder_path:str, mac_filter_file:str, room_settings_file:str)
 
 def main():
     """
-    Main function to run the RSSI sample cleaner.
+    Main function to run the RSSI dataset checker.
     """
-    print("RSSI Sample Cleaner")
-    print("===================")
+    print("RSSI Dataset Checker")
+    print("====================")
     # Load arguments
     parser = argparse.ArgumentParser()
     parser.add_argument(
